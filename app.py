@@ -15,14 +15,21 @@ st.set_page_config(
 
 @st.cache_resource
 def load_model():
-    """Load the saved model and feature names."""
+    """Load the saved model, scaler, and feature names."""
     try:
         model = joblib.load('best_model.pkl')
         feature_names = joblib.load('feature_names.pkl')
-        return model, feature_names
+        
+        # Try to load scaler if it exists
+        if os.path.exists('scaler.pkl'):
+            scaler = joblib.load('scaler.pkl')
+        else:
+            scaler = None
+            
+        return model, feature_names, scaler
     except Exception as e:
         st.error(f"Error loading model: {e}")
-        return None, None
+        return None, None, None
 
 def load_or_train_model():
     """Load the existing model or train a new one if not available."""
@@ -30,7 +37,7 @@ def load_or_train_model():
         st.warning("Model not found. Training a new model...")
         
         # Start training in a separate process
-        import model_training
+        import optimized_model_training as model_training
         
         # Add progress indicators
         progress_bar = st.progress(0)
@@ -51,15 +58,15 @@ def load_or_train_model():
                 return load_model()
             else:
                 st.error("Model training completed but model file was not created. Please check logs.")
-                return None, None
+                return None, None, None
                 
         except Exception as e:
             st.error(f"Error during model training: {str(e)}")
-            return None, None
+            return None, None, None
     
     return load_model()
 
-def make_prediction(model, feature_names, input_data):
+def make_prediction(model, feature_names, input_data, scaler=None):
     """
     Make prediction using the trained model.
     
@@ -67,6 +74,7 @@ def make_prediction(model, feature_names, input_data):
         model: Trained model
         feature_names: List of feature names
         input_data: Input data for prediction
+        scaler: Fitted scaler for numerical features
     
     Returns:
         tuple: Prediction and probability
@@ -75,13 +83,55 @@ def make_prediction(model, feature_names, input_data):
         # Convert input data to DataFrame with appropriate column names
         df = pd.DataFrame([input_data])
         
-        # Make prediction
-        prediction = model.predict(df)[0]
-        probability = model.predict_proba(df)[0][1]
+        # One-hot encode the Type column if present
+        if 'Type' in df.columns:
+            # Check if Type is categorical and convert to one-hot encoding
+            machine_type = df['Type'].iloc[0]
+            # Drop the Type column as we'll replace it with one-hot encoded columns
+            df = df.drop('Type', axis=1)
+            
+            # Create Type_H, Type_L, Type_M columns with proper values based on the machine_type
+            if machine_type == 'H':
+                df['Type_H'] = 1
+                df['Type_L'] = 0
+                df['Type_M'] = 0
+            elif machine_type == 'L': 
+                df['Type_H'] = 0
+                df['Type_L'] = 1
+                df['Type_M'] = 0
+            elif machine_type == 'M':
+                df['Type_H'] = 0
+                df['Type_L'] = 0
+                df['Type_M'] = 1
+        
+        # Apply scaling if scaler is provided
+        if scaler is not None:
+            # Scale the features
+            df_scaled = pd.DataFrame(scaler.transform(df), columns=df.columns)
+            # Make prediction with scaled data
+            prediction = model.predict(df_scaled)[0]
+            probability = model.predict_proba(df_scaled)[0][1]
+        else:
+            # Ensure the order of columns matches feature_names if provided
+            if feature_names:
+                # Check if we need to reorder columns
+                missing_cols = set(feature_names) - set(df.columns)
+                for col in missing_cols:
+                    df[col] = 0  # Add missing columns with default value 0
+                
+                # Reorder columns to match feature_names
+                df = df[feature_names]
+            
+            # Make prediction with original data
+            prediction = model.predict(df)[0]
+            probability = model.predict_proba(df)[0][1]
         
         return prediction, probability
     except Exception as e:
         st.error(f"Error during prediction: {e}")
+        st.error(f"Input data columns: {list(input_data.keys())}")
+        if feature_names:
+            st.error(f"Expected feature names: {feature_names}")
         return None, None
 
 def display_metrics(model):
@@ -111,7 +161,7 @@ def main():
         # Add a spinner to indicate training is happening
         with st.spinner('Training in progress...'):
             # Load or train model
-            model, feature_names = load_or_train_model()
+            model, feature_names, scaler = load_or_train_model()
             
             if model is None:
                 st.error("Failed to load or train the model. Please check the logs and try refreshing the page.")
@@ -126,17 +176,16 @@ def main():
                 return
     else:
         # Model exists, just load it
-        model, feature_names = load_model()
+        model, feature_names, scaler = load_model()
         
         if model is None:
             st.error("Failed to load the existing model. The model file might be corrupted.")
             # Add a button to retrain the model if loading fails
             if st.button("Retrain Model"):
                 # Remove existing model files
-                if os.path.exists('best_model.pkl'):
-                    os.remove('best_model.pkl')
-                if os.path.exists('feature_names.pkl'):
-                    os.remove('feature_names.pkl')
+                for file in ['best_model.pkl', 'feature_names.pkl', 'scaler.pkl']:
+                    if os.path.exists(file):
+                        os.remove(file)
                 # Reload the page to start training
                 st.experimental_rerun()
             return
@@ -180,7 +229,7 @@ def main():
     
     # Make prediction when button is clicked
     if st.sidebar.button("Predict Failure"):
-        prediction, probability = make_prediction(model, feature_names, input_data)
+        prediction, probability = make_prediction(model, feature_names, input_data, scaler)
         
         if prediction is not None:
             # Main panel - Results
