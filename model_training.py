@@ -95,22 +95,7 @@ def preprocess_data(df):
     
     return X, y, preprocessor, feature_names
 
-def apply_smote(X_train, y_train):
-    """
-    Apply SMOTE to handle class imbalance.
-    
-    Args:
-        X_train: Training features
-        y_train: Training target
-    
-    Returns:
-        tuple: Resampled features and target
-    """
-    print("Applying SMOTE to handle class imbalance...")
-    smote = SMOTE(random_state=RANDOM_STATE)
-    X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
-    print(f"After SMOTE - Class distribution: {pd.Series(y_resampled).value_counts().to_dict()}")
-    return X_resampled, y_resampled
+# SMOTE is now handled directly in the train_evaluate_models function
 
 def build_models():
     """
@@ -173,8 +158,13 @@ def train_evaluate_models(X, y, preprocessor, models):
         X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
     )
     
-    # Apply SMOTE only on the training data
-    X_resampled, y_resampled = apply_smote(X_train, y_train)
+    # Fit the preprocessor on training data
+    X_train_transformed = preprocessor.fit_transform(X_train)
+    
+    # Apply SMOTE only on the transformed training data
+    smote = SMOTE(random_state=RANDOM_STATE)
+    X_resampled, y_resampled = smote.fit_resample(X_train_transformed, y_train)
+    print(f"After SMOTE - Class distribution: {pd.Series(y_resampled).value_counts().to_dict()}")
     
     # Initialize variables to track best model
     best_model = None
@@ -188,31 +178,38 @@ def train_evaluate_models(X, y, preprocessor, models):
     for model_name, model_info in models.items():
         print(f"\nTraining {model_name}...")
         
-        # Create pipeline with preprocessing and classifier
-        pipeline = Pipeline([
-            ('preprocessor', preprocessor),
-            ('classifier', model_info['model'])
-        ])
+        # Create a classifier
+        classifier = model_info['model']
         
-        # Grid search with cross-validation
+        # Prepare the parameter grid without 'preprocessor' prefix
+        param_grid = {}
+        for param_name, param_values in model_info['params'].items():
+            # Remove 'classifier__' prefix for direct use
+            clean_param_name = param_name.replace('classifier__', '')
+            param_grid[clean_param_name] = param_values
+        
+        # Grid search with cross-validation directly on transformed data
         grid_search = GridSearchCV(
-            pipeline,
-            model_info['params'],
+            classifier,
+            param_grid,
             cv=cv,
             scoring='f1',
             n_jobs=-1,
             verbose=1
         )
         
-        # Fit the model
+        # Fit the model on preprocessed & resampled data
         grid_search.fit(X_resampled, y_resampled)
         
         # Get best model from grid search
-        best_pipeline = grid_search.best_estimator_
+        best_classifier = grid_search.best_estimator_
         
-        # Predict on test set
-        y_pred = best_pipeline.predict(X_test)
-        y_prob = best_pipeline.predict_proba(X_test)[:, 1]
+        # Transform test data for prediction
+        X_test_transformed = preprocessor.transform(X_test)
+        
+        # Predict on transformed test set
+        y_pred = best_classifier.predict(X_test_transformed)
+        y_prob = best_classifier.predict_proba(X_test_transformed)[:, 1]
         
         # Calculate metrics
         f1 = f1_score(y_test, y_pred)
@@ -221,9 +218,15 @@ def train_evaluate_models(X, y, preprocessor, models):
         recall = recall_score(y_test, y_pred)
         conf_matrix = confusion_matrix(y_test, y_pred)
         
+        # Create full pipeline with preprocessor and best classifier
+        full_pipeline = Pipeline([
+            ('preprocessor', preprocessor),
+            ('classifier', best_classifier)
+        ])
+        
         # Store results
         model_results[model_name] = {
-            'pipeline': best_pipeline,
+            'pipeline': full_pipeline,
             'best_params': grid_search.best_params_,
             'f1_score': f1,
             'roc_auc': roc_auc,
