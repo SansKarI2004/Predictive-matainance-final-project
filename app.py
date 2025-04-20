@@ -83,13 +83,10 @@ def make_prediction(model, feature_names, input_data, scaler=None):
         # Convert input data to DataFrame with appropriate column names
         df = pd.DataFrame([input_data])
         
-        # For debugging
-        st.write("Debug: Creating prediction dataframe with correct features")
-        
-        # Create a new empty dataframe with columns matching the expected features
+        # Create new DataFrame to match expected feature columns
         result_df = pd.DataFrame()
         
-        # Copy numerical features first
+        # Copy numeric features
         numeric_features = [
             'Air temperature [K]', 
             'Process temperature [K]', 
@@ -102,9 +99,14 @@ def make_prediction(model, feature_names, input_data, scaler=None):
             if feat in df.columns:
                 result_df[feat] = df[feat]
         
-        # Add dummy value for 'Machine failure' 
-        # (It will be ignored during prediction but needed for column structure)
-        result_df['Machine failure'] = 0
+        # Add failure flags (TWF, HDF, PWF, OSF, RNF) from input or set to default 0
+        failure_flags = ['TWF', 'HDF', 'PWF', 'OSF', 'RNF']
+        for flag in failure_flags:
+            if flag in df.columns:
+                result_df[flag] = df[flag]
+            else:
+                # Default to 0 if not provided
+                result_df[flag] = 0
         
         # Handle Type column (one-hot encoding)
         if 'Type' in df.columns:
@@ -112,51 +114,29 @@ def make_prediction(model, feature_names, input_data, scaler=None):
             # Add the Type columns based on the selected machine type
             result_df['Type_L'] = 1 if machine_type == 'L' else 0
             result_df['Type_M'] = 1 if machine_type == 'M' else 0
-            # Type_H is reference category, so it's not included in the model
+            # Type_H is reference category in one-hot encoding
         
-        # Ensure columns match feature_names exactly in order and content
-        # Some models might expect Type_H which isn't in feature_names
-        if 'Type_H' in feature_names and 'Type_H' not in result_df.columns:
-            result_df['Type_H'] = 1 if df['Type'].iloc[0] == 'H' else 0
+        # Check if all expected features are in result_df
+        for feature in feature_names:
+            if feature not in result_df.columns and feature != 'Machine failure':
+                result_df[feature] = 0
         
-        # For debugging
-        st.write("Debug: Feature dataframe created successfully")
+        # Now ensure the columns are in exactly the right order
+        result_df = result_df[feature_names]
         
         # Apply scaling if available
         if scaler is not None:
             try:
-                # Order the columns to match what the scaler expects
-                scaler_columns = [col for col in scaler.feature_names_in_ if col in result_df.columns]
-                if len(scaler_columns) == result_df.shape[1]:
-                    result_df = result_df[scaler_columns]  # Ensure correct column order
-                    scaled_data = scaler.transform(result_df)
-                    st.write("Debug: Scaling applied successfully")
-                    
-                    # Make prediction with scaled data
-                    prediction = model.predict(scaled_data)[0]
-                    probability = model.predict_proba(scaled_data)[0][1]
-                    return prediction, probability
-                else:
-                    st.warning("Column mismatch for scaler. Using direct prediction.")
+                scaled_data = scaler.transform(result_df)
+                prediction = model.predict(scaled_data)[0]
+                probability = model.predict_proba(scaled_data)[0][1]
+                return prediction, probability
             except Exception as scaling_error:
                 st.warning(f"Error during scaling: {scaling_error}. Using direct prediction.")
-        
-        # Reorder columns to match feature_names
-        if feature_names:
-            try:
-                # Filter to only include the columns that exist in both dataframes
-                common_cols = [col for col in feature_names if col in result_df.columns]
-                result_df = result_df[common_cols]
-                st.write(f"Debug: Reordered columns to {common_cols}")
-            except Exception as col_error:
-                st.warning(f"Error reordering columns: {col_error}")
         
         # Make prediction with prepared data
         prediction = model.predict(result_df)[0]
         probability = model.predict_proba(result_df)[0][1]
-        
-        # Remove debug messages in production
-        st.write("Debug: Prediction successful")
         
         return prediction, probability
     except Exception as e:
@@ -168,8 +148,7 @@ def make_prediction(model, feature_names, input_data, scaler=None):
         if 'Type' in input_data:
             st.error(f"Machine type: {input_data['Type']}")
             
-        # Try rebuilding the model
-        st.error("Please click the 'Retrain Model' button at the top of the page and try again.")
+        st.error("Please check the feature mismatch and try again.")
         
         return None, None
 
@@ -258,22 +237,27 @@ def main():
     torque = st.sidebar.slider("Torque [Nm]", 3.0, 77.0, 40.0, 0.1)
     tool_wear = st.sidebar.slider("Tool Wear [min]", 0, 250, 125, 1)
     
-    # Optional failure flags
-    st.sidebar.subheader("Known Failure Flags (Optional)")
-    st.sidebar.write("Note: These flags are not used for prediction, they're just for reference.")
+    # Failure flags
+    st.sidebar.subheader("Failure Indicators")
+    st.sidebar.write("Select known failure conditions if applicable:")
     twf_flag = st.sidebar.checkbox("Tool Wear Failure (TWF)", False)
     hdf_flag = st.sidebar.checkbox("Heat Dissipation Failure (HDF)", False)
     pwf_flag = st.sidebar.checkbox("Power Failure (PWF)", False)
     osf_flag = st.sidebar.checkbox("Overstrain Failure (OSF)", False)
     rnf_flag = st.sidebar.checkbox("Random Failure (RNF)", False)
     
-    # Create input data dictionary
+    # Create input data dictionary with all features expected by the model
     input_data = {
         'Air temperature [K]': air_temperature,
         'Process temperature [K]': process_temperature,
         'Rotational speed [rpm]': rotational_speed,
         'Torque [Nm]': torque,
         'Tool wear [min]': tool_wear,
+        'TWF': 1 if twf_flag else 0,
+        'HDF': 1 if hdf_flag else 0,
+        'PWF': 1 if pwf_flag else 0,
+        'OSF': 1 if osf_flag else 0,
+        'RNF': 1 if rnf_flag else 0,
         'Type': machine_type
     }
     
