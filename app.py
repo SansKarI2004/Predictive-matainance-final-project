@@ -28,9 +28,34 @@ def load_or_train_model():
     """Load the existing model or train a new one if not available."""
     if not os.path.exists('best_model.pkl'):
         st.warning("Model not found. Training a new model...")
+        
+        # Start training in a separate process
         import model_training
-        model_training.main()
-        st.success("Model training completed!")
+        
+        # Add progress indicators
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        status_text.text("Loading dataset...")
+        progress_bar.progress(10)
+        
+        # Run the model training
+        try:
+            model_training.main()
+            progress_bar.progress(100)
+            status_text.text("Model training completed successfully!")
+            st.success("Model training completed!")
+            
+            # Check if model was created
+            if os.path.exists('best_model.pkl'):
+                return load_model()
+            else:
+                st.error("Model training completed but model file was not created. Please check logs.")
+                return None, None
+                
+        except Exception as e:
+            st.error(f"Error during model training: {str(e)}")
+            return None, None
     
     return load_model()
 
@@ -77,12 +102,44 @@ def main():
     Enter the machine's operational parameters to get a prediction on whether it's likely to fail.
     """)
     
-    # Load or train model
-    model, feature_names = load_or_train_model()
-    
-    if model is None:
-        st.error("Failed to load or train the model. Please check the logs.")
-        return
+    # First check if model training is already in progress
+    if not os.path.exists('best_model.pkl'):
+        # Display a message that model training is about to start
+        st.info("Model not found. The system will train a new model now. This may take several minutes to complete.")
+        st.warning("Please wait while the model is being trained. The page will update automatically when training is complete.")
+        
+        # Add a spinner to indicate training is happening
+        with st.spinner('Training in progress...'):
+            # Load or train model
+            model, feature_names = load_or_train_model()
+            
+            if model is None:
+                st.error("Failed to load or train the model. Please check the logs and try refreshing the page.")
+                st.error("If the error persists, there may be an issue with the model training process.")
+                # Show common troubleshooting steps
+                st.markdown("""
+                **Troubleshooting tips:**
+                - Try refreshing the page
+                - Check if dataset is available and properly formatted
+                - Ensure all dependencies are installed correctly
+                """)
+                return
+    else:
+        # Model exists, just load it
+        model, feature_names = load_model()
+        
+        if model is None:
+            st.error("Failed to load the existing model. The model file might be corrupted.")
+            # Add a button to retrain the model if loading fails
+            if st.button("Retrain Model"):
+                # Remove existing model files
+                if os.path.exists('best_model.pkl'):
+                    os.remove('best_model.pkl')
+                if os.path.exists('feature_names.pkl'):
+                    os.remove('feature_names.pkl')
+                # Reload the page to start training
+                st.experimental_rerun()
+            return
     
     # Sidebar - Input parameters
     st.sidebar.header("Machine Parameters")
