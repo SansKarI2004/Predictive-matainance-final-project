@@ -83,6 +83,9 @@ def make_prediction(model, feature_names, input_data, scaler=None):
         # Convert input data to DataFrame with appropriate column names
         df = pd.DataFrame([input_data])
         
+        # Remove 'Machine failure' from expected feature names if present
+        expected_features = [f for f in feature_names if f != 'Machine failure']
+        
         # One-hot encode the Type column if present
         if 'Type' in df.columns:
             # Check if Type is categorical and convert to one-hot encoding
@@ -90,37 +93,63 @@ def make_prediction(model, feature_names, input_data, scaler=None):
             # Drop the Type column as we'll replace it with one-hot encoded columns
             df = df.drop('Type', axis=1)
             
-            # Create Type_H, Type_L, Type_M columns with proper values based on the machine_type
-            if machine_type == 'H':
+            # Create Type columns with proper values based on the machine_type
+            # Check what Type columns we need from expected features
+            type_columns = [f for f in expected_features if f.startswith('Type_')]
+            
+            # Initialize all Type columns to 0
+            for col in type_columns:
+                df[col] = 0
+                
+            # Set the appropriate Type column to 1
+            if machine_type == 'H' and 'Type_H' in type_columns:
                 df['Type_H'] = 1
-                df['Type_L'] = 0
-                df['Type_M'] = 0
-            elif machine_type == 'L': 
-                df['Type_H'] = 0
+            elif machine_type == 'L' and 'Type_L' in type_columns:
                 df['Type_L'] = 1
-                df['Type_M'] = 0
-            elif machine_type == 'M':
-                df['Type_H'] = 0
-                df['Type_L'] = 0
+            elif machine_type == 'M' and 'Type_M' in type_columns:
                 df['Type_M'] = 1
         
         # Apply scaling if scaler is provided
         if scaler is not None:
-            # Scale the features
-            df_scaled = pd.DataFrame(scaler.transform(df), columns=df.columns)
-            # Make prediction with scaled data
-            prediction = model.predict(df_scaled)[0]
-            probability = model.predict_proba(df_scaled)[0][1]
-        else:
-            # Ensure the order of columns matches feature_names if provided
-            if feature_names:
-                # Check if we need to reorder columns
-                missing_cols = set(feature_names) - set(df.columns)
-                for col in missing_cols:
-                    df[col] = 0  # Add missing columns with default value 0
+            try:
+                # Make sure df has the same columns as what the scaler expects
+                # First handle any missing columns
+                for col in scaler.feature_names_in_:
+                    if col not in df.columns and col != 'Machine failure':
+                        df[col] = 0
                 
-                # Reorder columns to match feature_names
-                df = df[feature_names]
+                # Order columns to match what scaler expects
+                scaler_columns = [col for col in scaler.feature_names_in_ if col != 'Machine failure']
+                if set(df.columns) != set(scaler_columns):
+                    st.warning(f"Column mismatch for scaler. Using direct prediction instead.")
+                    # Fall back to direct prediction
+                    scaler = None
+                else:
+                    # Scale the features
+                    df = df[scaler_columns]  # Ensure correct column order
+                    df_scaled = pd.DataFrame(scaler.transform(df), columns=df.columns)
+                    # Make prediction with scaled data
+                    prediction = model.predict(df_scaled)[0]
+                    probability = model.predict_proba(df_scaled)[0][1]
+                    return prediction, probability
+            except Exception as scaling_error:
+                st.warning(f"Error during scaling: {scaling_error}. Using direct prediction instead.")
+                scaler = None
+        
+        # If no scaler or scaling failed, use direct prediction
+        if scaler is None:
+            # Check and fix missing columns
+            missing_cols = set(expected_features) - set(df.columns)
+            for col in missing_cols:
+                df[col] = 0  # Add missing columns with default value 0
+            
+            # Remove any extra columns not in expected_features
+            extra_cols = set(df.columns) - set(expected_features)
+            if extra_cols:
+                df = df.drop(columns=extra_cols)
+            
+            # Reorder columns to match expected_features
+            df = df[expected_features]
             
             # Make prediction with original data
             prediction = model.predict(df)[0]
@@ -130,8 +159,16 @@ def make_prediction(model, feature_names, input_data, scaler=None):
     except Exception as e:
         st.error(f"Error during prediction: {e}")
         st.error(f"Input data columns: {list(input_data.keys())}")
-        if feature_names:
-            st.error(f"Expected feature names: {feature_names}")
+        st.error(f"Expected feature names: {feature_names}")
+        
+        # More detailed debugging
+        if 'Type' in input_data:
+            st.error(f"Machine type: {input_data['Type']}")
+            
+        st.error("Please try the following:")
+        st.error("1. Refresh the page and try again")
+        st.error("2. If the error persists, click the 'Retrain Model' button")
+        
         return None, None
 
 def display_metrics(model):
@@ -140,9 +177,9 @@ def display_metrics(model):
         st.subheader("Model Performance Metrics")
         col1, col2 = st.columns(2)
         with col1:
-            st.image('roc_curves.png', caption='ROC Curves', use_column_width=True)
+            st.image('roc_curves.png', caption='ROC Curves', use_container_width=True)
         with col2:
-            st.image('confusion_matrices.png', caption='Confusion Matrices', use_column_width=True)
+            st.image('confusion_matrices.png', caption='Confusion Matrices', use_container_width=True)
 
 def main():
     """Main function for the Streamlit app."""
@@ -151,6 +188,17 @@ def main():
     This application predicts machine failures based on operational data using machine learning. 
     Enter the machine's operational parameters to get a prediction on whether it's likely to fail.
     """)
+    
+    # Add a button to retrain model at the top right
+    col1, col2 = st.columns([5, 1])
+    with col2:
+        if st.button("⟳ Retrain Model"):
+            # Remove existing model files
+            for file in ['best_model.pkl', 'feature_names.pkl', 'scaler.pkl', 'roc_curves.png', 'confusion_matrices.png']:
+                if os.path.exists(file):
+                    os.remove(file)
+            st.success("Model files removed. Retraining will start.")
+            st.rerun()
     
     # First check if model training is already in progress
     if not os.path.exists('best_model.pkl'):
@@ -187,7 +235,7 @@ def main():
                     if os.path.exists(file):
                         os.remove(file)
                 # Reload the page to start training
-                st.experimental_rerun()
+                st.rerun()
             return
     
     # Sidebar - Input parameters
