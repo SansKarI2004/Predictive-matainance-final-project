@@ -83,77 +83,80 @@ def make_prediction(model, feature_names, input_data, scaler=None):
         # Convert input data to DataFrame with appropriate column names
         df = pd.DataFrame([input_data])
         
-        # Remove 'Machine failure' from expected feature names if present
-        expected_features = [f for f in feature_names if f != 'Machine failure']
+        # For debugging
+        st.write("Debug: Creating prediction dataframe with correct features")
         
-        # One-hot encode the Type column if present
+        # Create a new empty dataframe with columns matching the expected features
+        result_df = pd.DataFrame()
+        
+        # Copy numerical features first
+        numeric_features = [
+            'Air temperature [K]', 
+            'Process temperature [K]', 
+            'Rotational speed [rpm]', 
+            'Torque [Nm]', 
+            'Tool wear [min]'
+        ]
+        
+        for feat in numeric_features:
+            if feat in df.columns:
+                result_df[feat] = df[feat]
+        
+        # Add dummy value for 'Machine failure' 
+        # (It will be ignored during prediction but needed for column structure)
+        result_df['Machine failure'] = 0
+        
+        # Handle Type column (one-hot encoding)
         if 'Type' in df.columns:
-            # Check if Type is categorical and convert to one-hot encoding
             machine_type = df['Type'].iloc[0]
-            # Drop the Type column as we'll replace it with one-hot encoded columns
-            df = df.drop('Type', axis=1)
-            
-            # Create Type columns with proper values based on the machine_type
-            # Check what Type columns we need from expected features
-            type_columns = [f for f in expected_features if f.startswith('Type_')]
-            
-            # Initialize all Type columns to 0
-            for col in type_columns:
-                df[col] = 0
-                
-            # Set the appropriate Type column to 1
-            if machine_type == 'H' and 'Type_H' in type_columns:
-                df['Type_H'] = 1
-            elif machine_type == 'L' and 'Type_L' in type_columns:
-                df['Type_L'] = 1
-            elif machine_type == 'M' and 'Type_M' in type_columns:
-                df['Type_M'] = 1
+            # Add the Type columns based on the selected machine type
+            result_df['Type_L'] = 1 if machine_type == 'L' else 0
+            result_df['Type_M'] = 1 if machine_type == 'M' else 0
+            # Type_H is reference category, so it's not included in the model
         
-        # Apply scaling if scaler is provided
+        # Ensure columns match feature_names exactly in order and content
+        # Some models might expect Type_H which isn't in feature_names
+        if 'Type_H' in feature_names and 'Type_H' not in result_df.columns:
+            result_df['Type_H'] = 1 if df['Type'].iloc[0] == 'H' else 0
+        
+        # For debugging
+        st.write("Debug: Feature dataframe created successfully")
+        
+        # Apply scaling if available
         if scaler is not None:
             try:
-                # Make sure df has the same columns as what the scaler expects
-                # First handle any missing columns
-                for col in scaler.feature_names_in_:
-                    if col not in df.columns and col != 'Machine failure':
-                        df[col] = 0
-                
-                # Order columns to match what scaler expects
-                scaler_columns = [col for col in scaler.feature_names_in_ if col != 'Machine failure']
-                if set(df.columns) != set(scaler_columns):
-                    st.warning(f"Column mismatch for scaler. Using direct prediction instead.")
-                    # Fall back to direct prediction
-                    scaler = None
-                else:
-                    # Scale the features
-                    df = df[scaler_columns]  # Ensure correct column order
-                    df_scaled = pd.DataFrame(scaler.transform(df), columns=df.columns)
+                # Order the columns to match what the scaler expects
+                scaler_columns = [col for col in scaler.feature_names_in_ if col in result_df.columns]
+                if len(scaler_columns) == result_df.shape[1]:
+                    result_df = result_df[scaler_columns]  # Ensure correct column order
+                    scaled_data = scaler.transform(result_df)
+                    st.write("Debug: Scaling applied successfully")
+                    
                     # Make prediction with scaled data
-                    prediction = model.predict(df_scaled)[0]
-                    probability = model.predict_proba(df_scaled)[0][1]
+                    prediction = model.predict(scaled_data)[0]
+                    probability = model.predict_proba(scaled_data)[0][1]
                     return prediction, probability
+                else:
+                    st.warning("Column mismatch for scaler. Using direct prediction.")
             except Exception as scaling_error:
-                st.warning(f"Error during scaling: {scaling_error}. Using direct prediction instead.")
-                scaler = None
+                st.warning(f"Error during scaling: {scaling_error}. Using direct prediction.")
         
-        # If no scaler or scaling failed, use direct prediction
-        if scaler is None:
-            # Check and fix missing columns
-            missing_cols = set(expected_features) - set(df.columns)
-            for col in missing_cols:
-                df[col] = 0  # Add missing columns with default value 0
-            
-            # Remove any extra columns not in expected_features
-            extra_cols = set(df.columns) - set(expected_features)
-            if extra_cols:
-                df = df.drop(columns=extra_cols)
-            
-            # Reorder columns to match expected_features
-            df = df[expected_features]
-            
-            # Make prediction with original data
-            prediction = model.predict(df)[0]
-            probability = model.predict_proba(df)[0][1]
+        # Reorder columns to match feature_names
+        if feature_names:
+            try:
+                # Filter to only include the columns that exist in both dataframes
+                common_cols = [col for col in feature_names if col in result_df.columns]
+                result_df = result_df[common_cols]
+                st.write(f"Debug: Reordered columns to {common_cols}")
+            except Exception as col_error:
+                st.warning(f"Error reordering columns: {col_error}")
+        
+        # Make prediction with prepared data
+        prediction = model.predict(result_df)[0]
+        probability = model.predict_proba(result_df)[0][1]
+        
+        # Remove debug messages in production
+        st.write("Debug: Prediction successful")
         
         return prediction, probability
     except Exception as e:
@@ -165,9 +168,8 @@ def make_prediction(model, feature_names, input_data, scaler=None):
         if 'Type' in input_data:
             st.error(f"Machine type: {input_data['Type']}")
             
-        st.error("Please try the following:")
-        st.error("1. Refresh the page and try again")
-        st.error("2. If the error persists, click the 'Retrain Model' button")
+        # Try rebuilding the model
+        st.error("Please click the 'Retrain Model' button at the top of the page and try again.")
         
         return None, None
 
